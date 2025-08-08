@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verify Rewards</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; background: #0b0b12; color: #eaeaf1; }
+    header { padding: 20px; background: #1a1430; box-shadow: 0 2px 12px rgba(0,0,0,.25); position: sticky; top: 0; z-index: 10; }
+    h1 { margin: 0; font-size: 18px; letter-spacing: .5px; }
+    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+
+    .card { background: #141226; border: 1px solid #2b2550; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .row > * { flex: 1; min-width: 220px; }
+    label { font-size: 12px; color: #a8a6c3; display: block; margin-bottom: 6px; }
+    input[type="text"], input[type="datetime-local"] {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3566; background: #0f0d1e; color: #fff;
+      outline: none;
+    }
+    button {
+      padding: 10px 14px; border-radius: 10px; border: 1px solid #5a4bd6; background: #6e3ad8; color: white; cursor: pointer;
+    }
+    button.secondary { background: transparent; border-color: #3a3566; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+
+    .result { margin-top: 10px; padding: 12px; background: #0f0d1e; border: 1px solid #2b2550; border-radius: 10px; }
+    .ok { color: #6ef3b6; } .warn { color: #ffd166; } .err { color: #ff6b6b; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { padding: 10px; border-bottom: 1px solid #2b2550; text-align: left; font-size: 14px; }
+    th { color: #a8a6c3; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color: #a8a6c3; }
+  </style>
+</head>
+<body>
+  <header><h1>Reward Verification</h1></header>
+
+  <div class="wrap">
+    <!-- 查验证码 -->
+    <div class="card">
+      <div class="row">
+        <div>
+          <label for="code">Captcha Code</label>
+          <input id="code" type="text" placeholder="例如: ABC123" />
+        </div>
+        <div style="flex:0 0 auto; display:flex; gap:8px; align-self:flex-end">
+          <button id="btnSearch">Search</button>
+          <button id="btnClear" class="secondary">Clear</button>
+        </div>
+      </div>
+      <div id="codeResult" class="result muted">输入验证码并点击 Search。</div>
+    </div>
+
+    <!-- 最近记录（最新100条，可选时间范围） -->
+    <div class="card">
+      <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="from">From (optional)</label>
+          <input id="from" type="datetime-local" />
+        </div>
+        <div>
+          <label for="to">To (optional)</label>
+          <input id="to" type="datetime-local" />
+        </div>
+        <div style="flex:0 0 auto">
+          <button id="btnLoad">Load latest 100</button>
+        </div>
+      </div>
+      <div class="result muted">显示按时间倒序的最新 100 条记录。可选用时间范围过滤。</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Captcha</th>
+            <th>Amount</th>
+            <th>Doc ID</th>
+          </tr>
+        </thead>
+        <tbody id="list"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Firebase SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+  <script>
+    // === 与游戏页相同的配置 ===
+    const firebaseConfig = {
+      apiKey: "AIzaSyBl0CeDXK9NN_KA4U8zs2A6MpxcX-lSyps",
+      authDomain: "caishenrain.firebaseapp.com",
+      projectId: "caishenrain",
+      storageBucket: "caishenrain.firebasestorage.app",
+      messagingSenderId: "474637588644",
+      appId: "1:474637588644:web:41875e52b1bf934abb2e31",
+      measurementId: "G-FP1ER2SM70"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    // 避免网络环境导致的 400
+    db.settings({ experimentalForceLongPolling: true, useFetchStreams: false });
+
+    const $ = (id) => document.getElementById(id);
+    const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
+
+    // 按验证码查询
+    $('btnSearch').addEventListener('click', async () => {
+      const code = $('code').value.trim().toUpperCase();
+      const box = $('codeResult');
+      box.className = 'result muted';
+      if (!code) { box.textContent = '请输入验证码。'; return; }
+
+      box.textContent = '查询中…';
+      try {
+        const snap = await db.collection('rewards')
+          .where('captchaCode', '==', code)
+          .limit(1)
+          .get();
+
+        if (snap.empty) {
+          box.className = 'result err';
+          box.textContent = `未找到验证码 ${code} 的记录。`;
+          return;
+        }
+
+        const doc = snap.docs[0];
+        const data = doc.data();
+        box.className = 'result ok';
+        box.innerHTML = `
+          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
+          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
+          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
+          <div><strong>Doc ID</strong>：<span class="mono">${doc.id}</span></div>
+        `;
+      } catch (e) {
+        box.className = 'result err';
+        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
+        console.error(e);
+      }
+    });
+
+    $('btnClear').addEventListener('click', () => {
+      $('code').value = '';
+      $('codeResult').className = 'result muted';
+      $('codeResult').textContent = '输入验证码并点击 Search。';
+    });
+
+    // 加载最新 100 条（可选时间范围）
+    async function loadLatest() {
+      const tbody = $('list');
+      tbody.innerHTML = '<tr><td class="muted" colspan="4">加载中…</td></tr>';
+
+      try {
+        let ref = db.collection('rewards');
+
+        // 时间范围过滤（timestamp 为 Firestore Timestamp）
+        const fromVal = $('from').value ? new Date($('from').value) : null;
+        const toVal   = $('to').value   ? new Date($('to').value)   : null;
+
+        if (fromVal) ref = ref.where('timestamp', '>=', firebase.firestore.Timestamp.fromDate(fromVal));
+        if (toVal)   ref = ref.where('timestamp', '<=', firebase.firestore.Timestamp.fromDate(toVal));
+
+        // 最新 100 条
+        ref = ref.orderBy('timestamp', 'desc').limit(100);
+
+        const snap = await ref.get();
+
+        if (snap.empty) {
+          tbody.innerHTML = '<tr><td class="muted" colspan="4">没有记录。</td></tr>';
+          return;
+        }
+
+        const rows = [];
+        snap.forEach(doc => {
+          const d = doc.data();
+          rows.push(`
+            <tr>
+              <td>${fmt(d.timestamp)}</td>
+              <td class="mono">${d.captchaCode || ''}</td>
+              <td>SGD ${Number(d.rewardAmount).toFixed(2)}</td>
+              <td class="mono">${doc.id}</td>
+            </tr>
+          `);
+        });
+        tbody.innerHTML = rows.join('');
+      } catch (e) {
+        $('list').innerHTML = `<tr><td class="err" colspan="4">加载失败：${e.code || ''} ${e.message || e}</td></tr>`;
+        console.error(e);
+      }
+    }
+
+    $('btnLoad').addEventListener('click', loadLatest);
+    // 首次进入自动加载
+    loadLatest();
+  </script>
+</body>
+</html>
