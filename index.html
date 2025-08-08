@@ -32,7 +32,22 @@
   <header><h1>Reward Verification</h1></header>
 
   <div class="wrap">
-    <!-- 选择公司 + 页面 -->
+    <!-- ✅ 把“全球验证码查询”移动到顶部 -->
+    <div class="card">
+      <div class="row">
+        <div style="flex:1">
+          <label for="code">Captcha Code (Global)</label>
+          <input id="code" type="text" placeholder="例如: ABC1234" />
+        </div>
+        <div style="align-self:flex-end; display:flex; gap:8px">
+          <button id="btnSearch">Search</button>
+          <button id="btnClear" class="secondary">Clear</button>
+        </div>
+      </div>
+      <div id="codeResult" class="result muted">输入验证码并点击 Search（跨所有公司/页面检索）。</div>
+    </div>
+
+    <!-- 选择公司 + 页面（加载最新100条） -->
     <div class="card">
       <div class="row" style="align-items:flex-end">
         <div>
@@ -77,21 +92,6 @@
         <tbody id="list"></tbody>
       </table>
     </div>
-
-    <!-- 全球验证码查询（跨所有公司/页面） -->
-    <div class="card">
-      <div class="row">
-        <div style="flex:1">
-          <label for="code">Captcha Code (Global)</label>
-          <input id="code" type="text" placeholder="例如: ABC1234" />
-        </div>
-        <div style="align-self:flex-end; display:flex; gap:8px">
-          <button id="btnSearch">Search</button>
-          <button id="btnClear" class="secondary">Clear</button>
-        </div>
-      </div>
-      <div id="codeResult" class="result muted">输入验证码并点击 Search（跨所有公司/页面检索）。</div>
-    </div>
   </div>
 
   <!-- Firebase SDK (compat) -->
@@ -116,7 +116,60 @@
     const $ = (id) => document.getElementById(id);
     const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
 
-    // 加载列表（所选公司/页面），limit 100
+    // ⬆️ 顶部：跨全局验证码查询（collectionGroup）
+    $('btnSearch').addEventListener('click', async () => {
+      const code = $('code').value.trim().toUpperCase();
+      const box = $('codeResult');
+      box.className = 'result muted';
+      if (!code) { box.textContent = '请输入验证码。'; return; }
+
+      box.textContent = '查询中…';
+      try {
+        const snap = await db.collectionGroup('rewards')
+          .where('captchaCode', '==', code)
+          .limit(1)
+          .get();
+
+        if (snap.empty) {
+          box.className = 'result err';
+          box.textContent = `未找到验证码 ${code} 的记录。`;
+          return;
+        }
+
+        const doc = snap.docs[0];
+        const data = doc.data();
+        // 从路径解析出 companyId/pageId
+        const path = doc.ref.path; // companies/{companyId}/pages/{pageId}/rewards/{code}
+        const [, companyId, , pageId] = path.split('/');
+
+        box.className = 'result ok';
+        box.innerHTML = `
+          <div><strong>Company</strong>：<span class="mono">${companyId}</span></div>
+          <div><strong>Page</strong>：<span class="mono">${pageId}</span></div>
+          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
+          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
+          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
+          <div><strong>Doc Path</strong>：<span class="mono">${path}</span></div>
+        `;
+      } catch (e) {
+        box.className = 'result err';
+        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
+        console.error(e);
+      }
+    });
+
+    // 回车直接触发查询
+    $('code').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') $('btnSearch').click();
+    });
+
+    $('btnClear').addEventListener('click', () => {
+      $('code').value = '';
+      $('codeResult').className = 'result muted';
+      $('codeResult').textContent = '输入验证码并点击 Search（跨所有公司/页面检索）。';
+    });
+
+    // ⬇️ 下方：按公司/页面加载最新100条
     async function loadLatest(applyRange=false) {
       const companyId = $('company').value;
       const pageId = $('page').value;
@@ -167,54 +220,6 @@
 
     // 首次进入自动加载
     loadLatest(false);
-
-    // 跨全局验证码查询（collectionGroup）
-    $('btnSearch').addEventListener('click', async () => {
-      const code = $('code').value.trim().toUpperCase();
-      const box = $('codeResult');
-      box.className = 'result muted';
-      if (!code) { box.textContent = '请输入验证码。'; return; }
-
-      box.textContent = '查询中…';
-      try {
-        const snap = await db.collectionGroup('rewards')
-          .where('captchaCode', '==', code)
-          .limit(1)
-          .get();
-
-        if (snap.empty) {
-          box.className = 'result err';
-          box.textContent = `未找到验证码 ${code} 的记录。`;
-          return;
-        }
-
-        const doc = snap.docs[0];
-        const data = doc.data();
-        // 通过 doc.ref.path 拿到公司/页面信息
-        const path = doc.ref.path; // companies/{companyId}/pages/{pageId}/rewards/{code}
-        const [, companyId, , pageId] = path.split('/'); // 简单解析
-
-        box.className = 'result ok';
-        box.innerHTML = `
-          <div><strong>Company</strong>：<span class="mono">${companyId}</span></div>
-          <div><strong>Page</strong>：<span class="mono">${pageId}</span></div>
-          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
-          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
-          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
-          <div><strong>Doc Path</strong>：<span class="mono">${path}</span></div>
-        `;
-      } catch (e) {
-        box.className = 'result err';
-        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
-        console.error(e);
-      }
-    });
-
-    $('btnClear').addEventListener('click', () => {
-      $('code').value = '';
-      $('codeResult').className = 'result muted';
-      $('codeResult').textContent = '输入验证码并点击 Search（跨所有公司/页面检索）。';
-    });
   </script>
 </body>
 </html>
