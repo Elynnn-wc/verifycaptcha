@@ -11,7 +11,7 @@
     h1 { margin: 0; font-size: 18px; letter-spacing: .5px; }
     .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
 
-    .card { background: #141226; border: 1px solid #2b2550; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .card { position: relative; background: #141226; border: 1px solid #2b2550; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .row > * { min-width: 220px; }
     label { font-size: 12px; color: #a8a6c3; display: block; margin-bottom: 6px; }
@@ -26,13 +26,22 @@
     th { color: #a8a6c3; font-weight: 600; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .muted { color: #a8a6c3; }
+
+    /* 右上角 Page 徽章 */
+    .page-badges { position: absolute; top: 10px; right: 12px; display: flex; gap: 6px; }
+    .badge {
+      padding: 4px 8px; border-radius: 999px; border: 1px solid #3a3566;
+      background: #0f0d1e; color: #cfcff3; font-size: 12px; white-space: nowrap;
+    }
+    .badge .tag { color: #9ea0c9; margin-right: 4px; font-weight: 600; }
+    .badge.active { border-color: #6e3ad8; box-shadow: 0 0 0 1px rgba(110,58,216,.25); color: #ffffff; }
   </style>
 </head>
 <body>
   <header><h1>Reward Verification</h1></header>
 
   <div class="wrap">
-    <!-- ✅ 全球验证码查询在顶部 -->
+    <!-- 顶部：全球验证码查询 -->
     <div class="card">
       <div class="row">
         <div style="flex:1">
@@ -44,11 +53,18 @@
           <button id="btnClear" class="secondary">Clear</button>
         </div>
       </div>
-      <div id="codeResult" class="result muted">输入验证码并点击 Search（优先用全局检索；若缺索引自动降级到逐路径查询）。</div>
+      <div id="codeResult" class="result muted">输入验证码并点击 Search（优先全局检索；缺索引自动降级到逐路径查询）。</div>
     </div>
 
     <!-- 选择公司 + 页面（加载最新100条） -->
-    <div class="card">
+    <div class="card" id="cardFilter">
+      <!-- 右上角固定徽章 -->
+      <div class="page-badges" id="pageBadges">
+        <span class="badge" data-page="page1"><span class="tag">page1</span>3.88–8.88</span>
+        <span class="badge" data-page="page2"><span class="tag">page2</span>8.88–16.88</span>
+        <span class="badge" data-page="page3"><span class="tag">page3</span>88.88</span>
+      </div>
+
       <div class="row" style="align-items:flex-end">
         <div>
           <label for="company">Company</label>
@@ -116,37 +132,49 @@
     const $ = (id) => document.getElementById(id);
     const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
 
-    // 固定公司与页面（用于降级直查）
+    // 固定公司与页面（降级直查用）
     const COMPANIES = ['LB7','SGB','RYB'];
     const PAGES = ['page1','page2','page3'];
 
+    // 右上角徽章高亮
+    function highlightBadge(pageId) {
+      document.querySelectorAll('#pageBadges .badge').forEach(b => {
+        b.classList.toggle('active', b.dataset.page === pageId);
+      });
+    }
+    highlightBadge('page1');
+
+    // 点击徽章也能切换 page 下拉
+    document.querySelectorAll('#pageBadges .badge').forEach(b => {
+      b.addEventListener('click', () => {
+        $('page').value = b.dataset.page;
+        highlightBadge(b.dataset.page);
+        loadLatest(false);
+      });
+    });
+
+    // 顶部：全局验证码查询（支持索引→自动降级）
     async function fallbackLookupByPaths(code) {
-      // 逐路径直接 doc() 查：不需要任何索引
       for (const c of COMPANIES) {
         for (const p of PAGES) {
           const ref = db.collection('companies').doc(c)
                        .collection('pages').doc(p)
                        .collection('rewards').doc(code);
           const snap = await ref.get();
-          if (snap.exists) {
-            const d = snap.data();
-            return { data: d, companyId: c, pageId: p, path: ref.path };
-          }
+          if (snap.exists) return { data: snap.data(), companyId: c, pageId: p, path: ref.path };
         }
       }
       return null;
     }
 
-    // ⬆️ 顶部：跨全局验证码查询（collectionGroup，带索引→降级）
     $('btnSearch').addEventListener('click', async () => {
       const code = $('code').value.trim().toUpperCase();
       const box = $('codeResult');
       box.className = 'result muted';
       if (!code) { box.textContent = '请输入验证码。'; return; }
-
       box.textContent = '查询中…';
+
       try {
-        // 优先：collectionGroup（需要索引）
         const snap = await db.collectionGroup('rewards')
           .where('captchaCode', '==', code)
           .limit(1)
@@ -169,7 +197,6 @@
           return;
         }
 
-        // 没找到再降级
         const hit = await fallbackLookupByPaths(code);
         if (hit) {
           box.className = 'result ok';
@@ -186,8 +213,7 @@
           box.textContent = `未找到验证码 ${code} 的记录。`;
         }
       } catch (e) {
-        // 如果是缺索引，自动降级到直查
-        if (e.code === 'failed-precondition') {
+        if (e.code === 'failed-precondition' || e.code === 'permission-denied') {
           try {
             const hit = await fallbackLookupByPaths(code);
             if (hit) {
@@ -217,21 +243,21 @@
       }
     });
 
-    // 回车直接触发查询
     $('code').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') $('btnSearch').click();
     });
-
     $('btnClear').addEventListener('click', () => {
       $('code').value = '';
       $('codeResult').className = 'result muted';
       $('codeResult').textContent = '输入验证码并点击 Search（优先全局检索；缺索引则自动降级）。';
     });
 
-    // ⬇️ 下方：按公司/页面加载最新100条
+    // 下方：按公司/页面加载最新100条
     async function loadLatest(applyRange=false) {
       const companyId = $('company').value;
       const pageId = $('page').value;
+      highlightBadge(pageId);
+
       const tbody = $('list');
       tbody.innerHTML = '<tr><td class="muted" colspan="4">加载中…</td></tr>';
 
