@@ -13,21 +13,14 @@
 
     .card { background: #141226; border: 1px solid #2b2550; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .row > * { flex: 1; min-width: 220px; }
+    .row > * { min-width: 220px; }
     label { font-size: 12px; color: #a8a6c3; display: block; margin-bottom: 6px; }
-    input[type="text"], input[type="datetime-local"] {
-      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3566; background: #0f0d1e; color: #fff;
-      outline: none;
-    }
-    button {
-      padding: 10px 14px; border-radius: 10px; border: 1px solid #5a4bd6; background: #6e3ad8; color: white; cursor: pointer;
-    }
+    input, select { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3566; background: #0f0d1e; color: #fff; outline: none; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #5a4bd6; background: #6e3ad8; color: white; cursor: pointer; }
     button.secondary { background: transparent; border-color: #3a3566; }
     button:disabled { opacity: .6; cursor: not-allowed; }
-
     .result { margin-top: 10px; padding: 12px; background: #0f0d1e; border: 1px solid #2b2550; border-radius: 10px; }
     .ok { color: #6ef3b6; } .warn { color: #ffd166; } .err { color: #ff6b6b; }
-
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th, td { padding: 10px; border-bottom: 1px solid #2b2550; text-align: left; font-size: 14px; }
     th { color: #a8a6c3; font-weight: 600; }
@@ -39,24 +32,31 @@
   <header><h1>Reward Verification</h1></header>
 
   <div class="wrap">
-    <!-- 查验证码 -->
-    <div class="card">
-      <div class="row">
-        <div>
-          <label for="code">Captcha Code</label>
-          <input id="code" type="text" placeholder="例如: ABC123" />
-        </div>
-        <div style="flex:0 0 auto; display:flex; gap:8px; align-self:flex-end">
-          <button id="btnSearch">Search</button>
-          <button id="btnClear" class="secondary">Clear</button>
-        </div>
-      </div>
-      <div id="codeResult" class="result muted">输入验证码并点击 Search。</div>
-    </div>
-
-    <!-- 最近记录（最新100条，可选时间范围） -->
+    <!-- 选择公司 + 页面 -->
     <div class="card">
       <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="company">Company</label>
+          <select id="company">
+            <option value="LB7">LB7</option>
+            <option value="SGB">SGB</option>
+            <option value="RYB">RYB</option>
+          </select>
+        </div>
+        <div>
+          <label for="page">Page</label>
+          <select id="page">
+            <option value="page1">page1</option>
+            <option value="page2">page2</option>
+            <option value="page3">page3</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button id="btnLoad">Load latest 100</button>
+        </div>
+      </div>
+      <div class="row">
         <div>
           <label for="from">From (optional)</label>
           <input id="from" type="datetime-local" />
@@ -65,22 +65,32 @@
           <label for="to">To (optional)</label>
           <input id="to" type="datetime-local" />
         </div>
-        <div style="flex:0 0 auto">
-          <button id="btnLoad">Load latest 100</button>
+        <div style="align-self:flex-end">
+          <button id="btnLoadWithRange" class="secondary">Apply Range</button>
         </div>
       </div>
-      <div class="result muted">显示按时间倒序的最新 100 条记录。可选用时间范围过滤。</div>
+      <div class="result muted">从所选公司/页面加载按时间倒序的最新 100 条。可选用时间范围过滤。</div>
       <table>
         <thead>
-          <tr>
-            <th>Time</th>
-            <th>Captcha</th>
-            <th>Amount</th>
-            <th>Doc ID</th>
-          </tr>
+          <tr><th>Time</th><th>Captcha</th><th>Amount</th><th>Doc ID</th></tr>
         </thead>
         <tbody id="list"></tbody>
       </table>
+    </div>
+
+    <!-- 全球验证码查询（跨所有公司/页面） -->
+    <div class="card">
+      <div class="row">
+        <div style="flex:1">
+          <label for="code">Captcha Code (Global)</label>
+          <input id="code" type="text" placeholder="例如: ABC1234" />
+        </div>
+        <div style="align-self:flex-end; display:flex; gap:8px">
+          <button id="btnSearch">Search</button>
+          <button id="btnClear" class="secondary">Clear</button>
+        </div>
+      </div>
+      <div id="codeResult" class="result muted">输入验证码并点击 Search（跨所有公司/页面检索）。</div>
     </div>
   </div>
 
@@ -101,78 +111,34 @@
     };
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
-    // 避免网络环境导致的 400
     db.settings({ experimentalForceLongPolling: true, useFetchStreams: false });
 
     const $ = (id) => document.getElementById(id);
     const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
 
-    // 按验证码查询
-    $('btnSearch').addEventListener('click', async () => {
-      const code = $('code').value.trim().toUpperCase();
-      const box = $('codeResult');
-      box.className = 'result muted';
-      if (!code) { box.textContent = '请输入验证码。'; return; }
-
-      box.textContent = '查询中…';
-      try {
-        const snap = await db.collection('rewards')
-          .where('captchaCode', '==', code)
-          .limit(1)
-          .get();
-
-        if (snap.empty) {
-          box.className = 'result err';
-          box.textContent = `未找到验证码 ${code} 的记录。`;
-          return;
-        }
-
-        const doc = snap.docs[0];
-        const data = doc.data();
-        box.className = 'result ok';
-        box.innerHTML = `
-          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
-          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
-          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
-          <div><strong>Doc ID</strong>：<span class="mono">${doc.id}</span></div>
-        `;
-      } catch (e) {
-        box.className = 'result err';
-        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
-        console.error(e);
-      }
-    });
-
-    $('btnClear').addEventListener('click', () => {
-      $('code').value = '';
-      $('codeResult').className = 'result muted';
-      $('codeResult').textContent = '输入验证码并点击 Search。';
-    });
-
-    // 加载最新 100 条（可选时间范围）
-    async function loadLatest() {
+    // 加载列表（所选公司/页面），limit 100
+    async function loadLatest(applyRange=false) {
+      const companyId = $('company').value;
+      const pageId = $('page').value;
       const tbody = $('list');
       tbody.innerHTML = '<tr><td class="muted" colspan="4">加载中…</td></tr>';
 
       try {
-        let ref = db.collection('rewards');
+        let ref = db.collection('companies').doc(companyId)
+                    .collection('pages').doc(pageId)
+                    .collection('rewards');
 
-        // 时间范围过滤（timestamp 为 Firestore Timestamp）
-        const fromVal = $('from').value ? new Date($('from').value) : null;
-        const toVal   = $('to').value   ? new Date($('to').value)   : null;
+        if (applyRange) {
+          const fromVal = $('from').value ? new Date($('from').value) : null;
+          const toVal   = $('to').value   ? new Date($('to').value)   : null;
+          if (fromVal) ref = ref.where('timestamp', '>=', firebase.firestore.Timestamp.fromDate(fromVal));
+          if (toVal)   ref = ref.where('timestamp', '<=', firebase.firestore.Timestamp.fromDate(toVal));
+        }
 
-        if (fromVal) ref = ref.where('timestamp', '>=', firebase.firestore.Timestamp.fromDate(fromVal));
-        if (toVal)   ref = ref.where('timestamp', '<=', firebase.firestore.Timestamp.fromDate(toVal));
-
-        // 最新 100 条
         ref = ref.orderBy('timestamp', 'desc').limit(100);
-
         const snap = await ref.get();
 
-        if (snap.empty) {
-          tbody.innerHTML = '<tr><td class="muted" colspan="4">没有记录。</td></tr>';
-          return;
-        }
+        if (snap.empty) { tbody.innerHTML = '<tr><td class="muted" colspan="4">没有记录。</td></tr>'; return; }
 
         const rows = [];
         snap.forEach(doc => {
@@ -193,9 +159,62 @@
       }
     }
 
-    $('btnLoad').addEventListener('click', loadLatest);
+    // 事件绑定
+    $('btnLoad').addEventListener('click', () => loadLatest(false));
+    $('btnLoadWithRange').addEventListener('click', () => loadLatest(true));
+    $('company').addEventListener('change', () => loadLatest(false));
+    $('page').addEventListener('change', () => loadLatest(false));
+
     // 首次进入自动加载
-    loadLatest();
+    loadLatest(false);
+
+    // 跨全局验证码查询（collectionGroup）
+    $('btnSearch').addEventListener('click', async () => {
+      const code = $('code').value.trim().toUpperCase();
+      const box = $('codeResult');
+      box.className = 'result muted';
+      if (!code) { box.textContent = '请输入验证码。'; return; }
+
+      box.textContent = '查询中…';
+      try {
+        const snap = await db.collectionGroup('rewards')
+          .where('captchaCode', '==', code)
+          .limit(1)
+          .get();
+
+        if (snap.empty) {
+          box.className = 'result err';
+          box.textContent = `未找到验证码 ${code} 的记录。`;
+          return;
+        }
+
+        const doc = snap.docs[0];
+        const data = doc.data();
+        // 通过 doc.ref.path 拿到公司/页面信息
+        const path = doc.ref.path; // companies/{companyId}/pages/{pageId}/rewards/{code}
+        const [, companyId, , pageId] = path.split('/'); // 简单解析
+
+        box.className = 'result ok';
+        box.innerHTML = `
+          <div><strong>Company</strong>：<span class="mono">${companyId}</span></div>
+          <div><strong>Page</strong>：<span class="mono">${pageId}</span></div>
+          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
+          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
+          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
+          <div><strong>Doc Path</strong>：<span class="mono">${path}</span></div>
+        `;
+      } catch (e) {
+        box.className = 'result err';
+        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
+        console.error(e);
+      }
+    });
+
+    $('btnClear').addEventListener('click', () => {
+      $('code').value = '';
+      $('codeResult').className = 'result muted';
+      $('codeResult').textContent = '输入验证码并点击 Search（跨所有公司/页面检索）。';
+    });
   </script>
 </body>
 </html>
