@@ -32,7 +32,7 @@
   <header><h1>Reward Verification</h1></header>
 
   <div class="wrap">
-    <!-- ✅ 把“全球验证码查询”移动到顶部 -->
+    <!-- ✅ 全球验证码查询在顶部 -->
     <div class="card">
       <div class="row">
         <div style="flex:1">
@@ -44,7 +44,7 @@
           <button id="btnClear" class="secondary">Clear</button>
         </div>
       </div>
-      <div id="codeResult" class="result muted">输入验证码并点击 Search（跨所有公司/页面检索）。</div>
+      <div id="codeResult" class="result muted">输入验证码并点击 Search（优先用全局检索；若缺索引自动降级到逐路径查询）。</div>
     </div>
 
     <!-- 选择公司 + 页面（加载最新100条） -->
@@ -116,7 +116,28 @@
     const $ = (id) => document.getElementById(id);
     const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
 
-    // ⬆️ 顶部：跨全局验证码查询（collectionGroup）
+    // 固定公司与页面（用于降级直查）
+    const COMPANIES = ['LB7','SGB','RYB'];
+    const PAGES = ['page1','page2','page3'];
+
+    async function fallbackLookupByPaths(code) {
+      // 逐路径直接 doc() 查：不需要任何索引
+      for (const c of COMPANIES) {
+        for (const p of PAGES) {
+          const ref = db.collection('companies').doc(c)
+                       .collection('pages').doc(p)
+                       .collection('rewards').doc(code);
+          const snap = await ref.get();
+          if (snap.exists) {
+            const d = snap.data();
+            return { data: d, companyId: c, pageId: p, path: ref.path };
+          }
+        }
+      }
+      return null;
+    }
+
+    // ⬆️ 顶部：跨全局验证码查询（collectionGroup，带索引→降级）
     $('btnSearch').addEventListener('click', async () => {
       const code = $('code').value.trim().toUpperCase();
       const box = $('codeResult');
@@ -125,36 +146,74 @@
 
       box.textContent = '查询中…';
       try {
+        // 优先：collectionGroup（需要索引）
         const snap = await db.collectionGroup('rewards')
           .where('captchaCode', '==', code)
           .limit(1)
           .get();
 
-        if (snap.empty) {
-          box.className = 'result err';
-          box.textContent = `未找到验证码 ${code} 的记录。`;
+        if (!snap.empty) {
+          const doc = snap.docs[0];
+          const data = doc.data();
+          const path = doc.ref.path;
+          const [, companyId, , pageId] = path.split('/');
+          box.className = 'result ok';
+          box.innerHTML = `
+            <div><strong>Company</strong>：<span class="mono">${companyId}</span></div>
+            <div><strong>Page</strong>：<span class="mono">${pageId}</span></div>
+            <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
+            <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
+            <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
+            <div><strong>Doc Path</strong>：<span class="mono">${path}</span></div>
+          `;
           return;
         }
 
-        const doc = snap.docs[0];
-        const data = doc.data();
-        // 从路径解析出 companyId/pageId
-        const path = doc.ref.path; // companies/{companyId}/pages/{pageId}/rewards/{code}
-        const [, companyId, , pageId] = path.split('/');
-
-        box.className = 'result ok';
-        box.innerHTML = `
-          <div><strong>Company</strong>：<span class="mono">${companyId}</span></div>
-          <div><strong>Page</strong>：<span class="mono">${pageId}</span></div>
-          <div><strong>验证码</strong>：<span class="mono">${data.captchaCode}</span></div>
-          <div><strong>中奖金额</strong>：SGD ${Number(data.rewardAmount).toFixed(2)}</div>
-          <div><strong>时间</strong>：${fmt(data.timestamp)}</div>
-          <div><strong>Doc Path</strong>：<span class="mono">${path}</span></div>
-        `;
+        // 没找到再降级
+        const hit = await fallbackLookupByPaths(code);
+        if (hit) {
+          box.className = 'result ok';
+          box.innerHTML = `
+            <div><strong>Company</strong>：<span class="mono">${hit.companyId}</span></div>
+            <div><strong>Page</strong>：<span class="mono">${hit.pageId}</span></div>
+            <div><strong>验证码</strong>：<span class="mono">${hit.data.captchaCode}</span></div>
+            <div><strong>中奖金额</strong>：SGD ${Number(hit.data.rewardAmount).toFixed(2)}</div>
+            <div><strong>时间</strong>：${fmt(hit.data.timestamp)}</div>
+            <div><strong>Doc Path</strong>：<span class="mono">${hit.path}</span></div>
+          `;
+        } else {
+          box.className = 'result err';
+          box.textContent = `未找到验证码 ${code} 的记录。`;
+        }
       } catch (e) {
-        box.className = 'result err';
-        box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
-        console.error(e);
+        // 如果是缺索引，自动降级到直查
+        if (e.code === 'failed-precondition') {
+          try {
+            const hit = await fallbackLookupByPaths(code);
+            if (hit) {
+              box.className = 'result ok';
+              box.innerHTML = `
+                <div><strong>Company</strong>：<span class="mono">${hit.companyId}</span></div>
+                <div><strong>Page</strong>：<span class="mono">${hit.pageId}</span></div>
+                <div><strong>验证码</strong>：<span class="mono">${hit.data.captchaCode}</span></div>
+                <div><strong>中奖金额</strong>：SGD ${Number(hit.data.rewardAmount).toFixed(2)}</div>
+                <div><strong>时间</strong>：${fmt(hit.data.timestamp)}</div>
+                <div><strong>Doc Path</strong>：<span class="mono">${hit.path}</span></div>
+              `;
+            } else {
+              box.className = 'result err';
+              box.textContent = `未找到验证码 ${code} 的记录。（已自动降级到逐路径查询）`;
+            }
+          } catch (ee) {
+            box.className = 'result err';
+            box.textContent = `查询失败（降级也失败）：${ee.code || ''} ${ee.message || ee}`;
+            console.error(ee);
+          }
+        } else {
+          box.className = 'result err';
+          box.textContent = `查询失败：${e.code || ''} ${e.message || e}`;
+          console.error(e);
+        }
       }
     });
 
@@ -166,7 +225,7 @@
     $('btnClear').addEventListener('click', () => {
       $('code').value = '';
       $('codeResult').className = 'result muted';
-      $('codeResult').textContent = '输入验证码并点击 Search（跨所有公司/页面检索）。';
+      $('codeResult').textContent = '输入验证码并点击 Search（优先全局检索；缺索引则自动降级）。';
     });
 
     // ⬇️ 下方：按公司/页面加载最新100条
