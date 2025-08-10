@@ -130,7 +130,13 @@
     db.settings({ experimentalForceLongPolling: true, useFetchStreams: false });
 
     const $ = (id) => document.getElementById(id);
-    const fmt = (ts) => ts?.toDate ? ts.toDate().toLocaleString() : '—';
+    // Format Firestore Timestamp or native Date objects
+    const fmt = (ts) => {
+      if (!ts) return '—';
+      if (ts instanceof Date) return ts.toLocaleString();
+      if (typeof ts.toDate === 'function') return ts.toDate().toLocaleString();
+      return '—';
+    };
 
     // 固定公司与页面（降级直查用）
     const COMPANIES = ['LB7','SGB','RYB'];
@@ -249,7 +255,7 @@
     $('btnClear').addEventListener('click', () => {
       $('code').value = '';
       $('codeResult').className = 'result muted';
-      $('codeResult').textContent = '输入验证码并点击 Search（优先全局检索；缺索引则自动降级）。';
+      $('codeResult').textContent = '输入验证码并点击 Search（优先全局检索；缺索引自动降级到逐路径查询）。';
     });
 
     // 下方：按公司/页面加载最新100条
